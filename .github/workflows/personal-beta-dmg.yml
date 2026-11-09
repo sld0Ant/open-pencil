@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 3
+          fetch-depth: 100
       - name: Verify the pinned upstream source tree
         run: git diff --exit-code "$SOURCE_COMMIT" HEAD -- . ':!.github/workflows/personal-beta-dmg.yml'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -84,6 +84,7 @@ jobs:
         with:
           workspaces: . -> target
           key: personal-beta-${{ matrix.target }}
+          cache-on-failure: true
       - uses: ./.github/actions/setup/workspace
         with:
           cache-scope: personal-beta
@@ -96,6 +97,15 @@ jobs:
         run: node -e 'require("node:fs").writeFileSync("personal-beta.json", JSON.stringify({productName:"OpenPencil Beta",version:process.env.BETA_VERSION,identifier:"net.dannote.open-pencil.beta",build:{beforeBuildCommand:null},bundle:{createUpdaterArtifacts:false,macOS:{signingIdentity:"-"},resources:{"../dist/THIRD-PARTY-NOTICES.md":"licenses/THIRD-PARTY-NOTICES-JAVASCRIPT.md","generated/THIRD-PARTY-NOTICES.md":"licenses/THIRD-PARTY-NOTICES-RUST.md"}}}))'
       - name: Build the beta app and DMG
         run: node node_modules/@tauri-apps/cli/tauri.js build --target "$RELEASE_TARGET" --bundles dmg --config "$GITHUB_WORKSPACE/personal-beta.json"
+      - name: Write DMG SHA-256
+        run: shasum -a 256 target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg > target/"$RELEASE_TARGET"/release/bundle/dmg/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: OpenPencil-Beta-${{ env.BETA_VERSION }}-${{ matrix.arch }}-b117395
+          path: target/${{ matrix.target }}/release/bundle/dmg/*
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
       - name: Verify the DMG checksum structure
         run: hdiutil verify target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg
       - name: Prepare a read-only DMG mount
@@ -107,16 +117,7 @@ jobs:
       - name: Verify the executable architecture
         env:
           EXPECTED_CPU: ${{ matrix.cpu }}
-        run: lipo -verify_arch "$EXPECTED_CPU" "$RUNNER_TEMP/beta-dmg/OpenPencil Beta.app/Contents/MacOS/OpenPencil"
+        run: lipo "$RUNNER_TEMP/beta-dmg/OpenPencil Beta.app/Contents/MacOS/OpenPencil" -verify_arch "$EXPECTED_CPU"
       - name: Unmount the DMG
         if: always()
         run: hdiutil detach "$RUNNER_TEMP/beta-dmg"
-      - name: Write DMG SHA-256
-        run: shasum -a 256 target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg > target/"$RELEASE_TARGET"/release/bundle/dmg/SHA256SUMS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: OpenPencil-Beta-${{ env.BETA_VERSION }}-${{ matrix.arch }}-b117395
-          path: target/${{ matrix.target }}/release/bundle/dmg/*
-          retention-days: 30
-          if-no-files-found: error
-          compression-level: 0

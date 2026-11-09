@@ -19,9 +19,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 2
-      - name: Verify the pinned upstream parent
-        run: test "$(git rev-parse HEAD^)" = "$SOURCE_COMMIT"
+          fetch-depth: 3
+      - name: Verify the pinned upstream source tree
+        run: git diff --exit-code "$SOURCE_COMMIT" HEAD -- . ':!.github/workflows/personal-beta-dmg.yml'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.x
@@ -98,12 +98,19 @@ jobs:
         run: node node_modules/@tauri-apps/cli/tauri.js build --target "$RELEASE_TARGET" --bundles dmg --config "$GITHUB_WORKSPACE/personal-beta.json"
       - name: Verify the DMG checksum structure
         run: hdiutil verify target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg
+      - name: Prepare a read-only DMG mount
+        run: mkdir -p "$RUNNER_TEMP/beta-dmg"
+      - name: Mount the actual distributable
+        run: hdiutil attach target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/beta-dmg"
       - name: Verify the app signature
-        run: codesign --verify --deep --strict --verbose=2 "target/$RELEASE_TARGET/release/bundle/macos/OpenPencil Beta.app"
+        run: codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/beta-dmg/OpenPencil Beta.app"
       - name: Verify the executable architecture
         env:
           EXPECTED_CPU: ${{ matrix.cpu }}
-        run: lipo -verify_arch "$EXPECTED_CPU" "target/$RELEASE_TARGET/release/bundle/macos/OpenPencil Beta.app/Contents/MacOS/OpenPencil"
+        run: lipo -verify_arch "$EXPECTED_CPU" "$RUNNER_TEMP/beta-dmg/OpenPencil Beta.app/Contents/MacOS/OpenPencil"
+      - name: Unmount the DMG
+        if: always()
+        run: hdiutil detach "$RUNNER_TEMP/beta-dmg"
       - name: Write DMG SHA-256
         run: shasum -a 256 target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg > target/"$RELEASE_TARGET"/release/bundle/dmg/SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

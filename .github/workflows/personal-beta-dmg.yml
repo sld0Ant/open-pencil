@@ -1,0 +1,115 @@
+name: Personal beta DMG
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BETA_VERSION: 0.17.0-beta.20261109
+  SOURCE_COMMIT: b11739556ebd04f17345908b7c52426a92bf05fa
+  OPENPENCIL_SELF_UPDATE: '0'
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify the pinned upstream parent
+        run: test "$(git rev-parse HEAD^)" = "$SOURCE_COMMIT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          package-manager-cache: false
+      - uses: ./.github/actions/setup/workspace
+        with:
+          cache-scope: personal-beta
+      - uses: ./.github/actions/setup/playwright
+      - name: Set the personal beta display version
+        run: node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync("package.json","utf8")); p.version=process.env.BETA_VERSION; fs.writeFileSync("package.json",JSON.stringify(p,null,2)+"\n")'
+      - name: Generate desktop icons
+        run: bun run generate:icons --target desktop
+      - name: Generate native menus
+        run: bun run generate:tauri-menu
+      - name: Build packages and frontend with upstream lint checks
+        run: bun run build
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: cargo-about@0.9.3
+      - name: Generate third-party license notices
+        run: bun tools/release/release-packages/src/cli.ts notices
+      - name: Archive shared frontend and native resources
+        run: tar -cf frontend.tar dist desktop/icons desktop/generated
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: personal-beta-frontend
+          path: frontend.tar
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  dmg:
+    needs: frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+            cpu: arm64
+          - target: x86_64-apple-darwin
+            arch: intel
+            cpu: x86_64
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      APPLE_SIGNING_IDENTITY: '-'
+      RELEASE_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.x
+          package-manager-cache: false
+      - name: Install the pinned Rust toolchain and target
+        run: rustup target add "$RELEASE_TARGET"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> target
+          key: personal-beta-${{ matrix.target }}
+      - uses: ./.github/actions/setup/workspace
+        with:
+          cache-scope: personal-beta
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: personal-beta-frontend
+      - name: Extract the shared frontend and native resources
+        run: tar -xf frontend.tar
+      - name: Configure a separate beta app with ad-hoc signing
+        run: node -e 'require("node:fs").writeFileSync("personal-beta.json", JSON.stringify({productName:"OpenPencil Beta",version:process.env.BETA_VERSION,identifier:"net.dannote.open-pencil.beta",build:{beforeBuildCommand:null},bundle:{createUpdaterArtifacts:false,macOS:{signingIdentity:"-"},resources:{"../dist/THIRD-PARTY-NOTICES.md":"licenses/THIRD-PARTY-NOTICES-JAVASCRIPT.md","generated/THIRD-PARTY-NOTICES.md":"licenses/THIRD-PARTY-NOTICES-RUST.md"}}}))'
+      - name: Build the beta app and DMG
+        run: node node_modules/@tauri-apps/cli/tauri.js build --target "$RELEASE_TARGET" --bundles dmg --config "$GITHUB_WORKSPACE/personal-beta.json"
+      - name: Verify the DMG checksum structure
+        run: hdiutil verify target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg
+      - name: Verify the app signature
+        run: codesign --verify --deep --strict --verbose=2 "target/$RELEASE_TARGET/release/bundle/macos/OpenPencil Beta.app"
+      - name: Verify the executable architecture
+        env:
+          EXPECTED_CPU: ${{ matrix.cpu }}
+        run: lipo -verify_arch "$EXPECTED_CPU" "target/$RELEASE_TARGET/release/bundle/macos/OpenPencil Beta.app/Contents/MacOS/OpenPencil"
+      - name: Write DMG SHA-256
+        run: shasum -a 256 target/"$RELEASE_TARGET"/release/bundle/dmg/*.dmg > target/"$RELEASE_TARGET"/release/bundle/dmg/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: OpenPencil-Beta-${{ env.BETA_VERSION }}-${{ matrix.arch }}-b117395
+          path: target/${{ matrix.target }}/release/bundle/dmg/*
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0

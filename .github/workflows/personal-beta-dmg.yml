@@ -2,9 +2,15 @@ name: Personal beta DMG
 
 on:
   workflow_dispatch:
+    inputs:
+      frontend_run:
+        description: Reuse the checked frontend from a previous run of this pinned source (optional).
+        type: string
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 env:
   BETA_VERSION: 0.17.0-beta.20261109
@@ -13,6 +19,7 @@ env:
 
 jobs:
   frontend:
+    if: inputs.frontend_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -55,6 +62,7 @@ jobs:
 
   dmg:
     needs: frontend
+    if: ${{ !cancelled() && (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +99,8 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: personal-beta-frontend
+          run-id: ${{ inputs.frontend_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Extract the shared frontend and native resources
         run: tar -xf frontend.tar
       - name: Configure a separate beta app with ad-hoc signing
